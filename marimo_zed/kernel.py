@@ -40,11 +40,22 @@ from marimo_zed.bridge import MarimoBridge
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
+_DATA_URI_RE = re.compile(r"^data:[\w./+-]+;base64,")
+
 _SETTLE_SECONDS = 0.05
 
 
 def _strip_tags(html: str) -> str:
     return _TAG_RE.sub("", html)
+
+
+def _strip_data_uri(value: Any) -> Any:
+    """Jupyter expects bare base64 for binary mimetypes; marimo sends data URIs."""
+    if isinstance(value, str):
+        match = _DATA_URI_RE.match(value)
+        if match:
+            return value[match.end() :]
+    return value
 
 
 class MarimoZedKernel(Kernel):
@@ -328,8 +339,16 @@ class MarimoZedKernel(Kernel):
         data = output.data
         if data in ("", None):
             return None
-        if mimetype == "application/vnd.marimo+mimebundle" and isinstance(data, dict):
-            return dict(data)
+        if mimetype == "application/vnd.marimo+mimebundle":
+            bundle = data
+            if isinstance(bundle, str):
+                try:
+                    bundle = json.loads(bundle)
+                except ValueError:
+                    return {"text/plain": bundle}
+            if isinstance(bundle, dict):
+                return {key: _strip_data_uri(val) for key, val in bundle.items()}
+            return {"text/plain": str(bundle)}
         # marimo's text/markdown payloads are rendered HTML, not markdown
         if mimetype in ("text/html", "text/markdown", "application/vnd.marimo+html"):
             html = str(data)
@@ -341,7 +360,9 @@ class MarimoZedKernel(Kernel):
                 except ValueError:
                     return {"text/plain": data}
             return {"application/json": data}
-        if mimetype.startswith(("image/", "text/", "application/")):
+        if mimetype.startswith("image/"):
+            return {mimetype: _strip_data_uri(data)}
+        if mimetype.startswith(("text/", "application/")):
             return {mimetype: data}
         return {"text/plain": str(data)}
 
