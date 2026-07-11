@@ -10,6 +10,7 @@ from pathlib import Path
 from jupyter_client.kernelspec import KernelSpecManager
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GITHUB_SOURCE = "git+https://github.com/hermabr/marimo.zed"
 
 
 def main() -> None:
@@ -21,7 +22,29 @@ def main() -> None:
     parser.add_argument(
         "--uv", default="uv", help="uv executable to put in the kernelspec (default: uv)"
     )
+    parser.add_argument(
+        "--source",
+        default=None,
+        help="where the kernelspec gets marimo-zed from: a local directory "
+        "(installed editable) or a uv requirement such as "
+        f"{GITHUB_SOURCE} (default: this checkout when run from one, "
+        "else the GitHub repo)",
+    )
     args = parser.parse_args()
+
+    if args.source is not None:
+        source = args.source
+    elif (REPO_ROOT / "pyproject.toml").is_file():
+        # Running from a checkout (e.g. `uv run marimo-zed-install`).
+        source = str(REPO_ROOT)
+    else:
+        # Running from an installed package (e.g. `uvx --from git+... marimo-zed-install`),
+        # where REPO_ROOT is a site-packages directory that uv cannot install from.
+        source = GITHUB_SOURCE
+    if Path(source).is_dir():
+        with_args = ["--with-editable", str(Path(source).resolve())]
+    else:
+        with_args = ["--with", source]
 
     # The kernel is launched with `uv run` from the directory Zed opened, so
     # both the kernel process and user code run in that project's environment,
@@ -30,8 +53,7 @@ def main() -> None:
         "argv": [
             args.uv,
             "run",
-            "--with-editable",
-            str(REPO_ROOT),
+            *with_args,
             "python",
             "-m",
             "marimo_zed",

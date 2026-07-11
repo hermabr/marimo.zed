@@ -44,13 +44,27 @@ The bridge to the marimo runtime subprocess follows the same pattern as
 
 ## Install
 
+From a checkout:
+
 ```sh
 uv run marimo-zed-install
 ```
 
 This writes a `marimo` kernelspec to `~/Library/Jupyter/kernels/marimo` that
 references this checkout via `uv run --with-editable`, so there is nothing to
-build or publish. `uv` must be on the PATH Zed sees. The first launch in a new
+build or publish.
+
+Without a checkout — e.g. on a remote machine you ssh into with Zed, where
+kernels run remotely and need their own kernelspec:
+
+```sh
+uvx --from git+https://github.com/hermabr/marimo.zed marimo-zed-install
+```
+
+The kernelspec then references the GitHub repo via `uv run --with`, so the
+kernel resolves the same source on any machine. `--source` overrides what
+the kernelspec installs: a git/PyPI requirement, or a local directory
+(installed editable). `uv` must be on the PATH Zed sees. The first launch in a new
 project resolves the overlay environment and can take a few seconds;
 subsequent launches use uv's cache.
 
