@@ -1,6 +1,6 @@
 # marimo.zed
 
-> Pre-alpha MVP. Expect breaking changes.
+> Pre-alpha MVP. Expect breaking changes. FULLY VIBE-CODED
 
 A **reactive marimo kernel for Zed's built-in REPL**. Zed's REPL speaks the
 Jupyter protocol, so this package implements a Jupyter kernel that routes every
