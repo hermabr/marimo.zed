@@ -220,22 +220,19 @@ def write_notebook2(notebook_dir, p_line: str) -> None:
     )
 
 
-def test_adopted_dependents_rerun_on_save(client, notebook_dir):
-    # Only the `p` cell is ever executed; `q = p + 1` exists in the file but
-    # is merely adopted when the file is first watched. Changing `p` on disk
-    # must still rerun `q`, even though the runtime has never seen it.
+def test_first_watch_runs_all_cells_and_dependents(client, notebook_dir):
+    # Only `p` is explicitly executed; first discovery must also run `q`.
     write_notebook2(notebook_dir, "p = 1")
     status, _ = run(client, "p = 1")
     assert status == "ok"
-    wait_for_text(client, "watching notebook2.py")
+    wait_for_texts(client, {"watching notebook2.py", "q = 2"})
 
     write_notebook2(notebook_dir, "p = 41")
     wait_for_text(client, "q = 42")
 
 
 def test_execute_pulls_in_adopted_ancestors(client, notebook_dir):
-    # `r = 10` was adopted from notebook2.py but never executed. A new cell
-    # reading `r` must run that ancestor first instead of raising NameError.
+    # A new cell can read `r` from the discovered notebook graph.
     status, outputs = run(client, "s = r + 5\nprint('s =', s)")
     assert status == "ok"
     assert "s = 15" in text_of(outputs)

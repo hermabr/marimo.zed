@@ -525,11 +525,9 @@ class MarimoZedKernel(Kernel):
             run_ids: list[str] = []
             broken = False
             if previous_cells is None:
-                # First look at this file: adopt its cells without running
-                # anything, except cells we already know that were edited
-                # between execution and the first save.
+                # First look at this file: adopt and run every new cell.
                 for code in cells:
-                    self._adopt_cell(code, run_ids, known_only=True)
+                    self._adopt_cell(code, run_ids)
                 removed: list[str] = []
             else:
                 previous_set, current_set = set(previous_cells), set(cells)
@@ -598,22 +596,18 @@ class MarimoZedKernel(Kernel):
                 finally:
                     self._oob_parent = None
 
-    def _adopt_cell(
-        self, code: str, run_ids: list[str], *, known_only: bool = False
-    ) -> str | None:
+    def _adopt_cell(self, code: str, run_ids: list[str]) -> str | None:
         """Register a cell parsed from a watched file.
 
-        Appends the cell to ``run_ids`` when its code changed (with
-        ``known_only``, only for cells that already existed in the graph).
-        Returns the cell id, or None if the cell does not compile.
+        Appends the cell to ``run_ids`` when its code changed. Returns the cell
+        id, or None if the cell does not compile.
         """
         try:
             compiled = compile_cell(code, cell_id=cast(CellId_t, uuid.uuid4().hex))
         except Exception:
             return None
         cell_id, _, previous = self._register_cell(code, compiled)
-        changed = previous is not None if known_only else True
-        if changed and previous != code:
+        if previous != code:
             run_ids.append(cell_id)
         return cell_id
 

@@ -150,10 +150,7 @@ leave insert mode, marimo.zed re-runs them when the notebook file is saved:
 - **Eager mode (default):** saving the file re-runs every cell whose code
   changed, plus new cells, and marimo reactively recomputes their dependents.
   Existing cells' outputs are replaced in their own output areas.
-- Cells found in the watched file that you never executed are adopted into the
-  graph without running. They still participate in reactivity: they run once a
-  cell they depend on runs, and executing code that reads their variables runs
-  them first (instead of raising `NameError`).
+- Cells found when the file is first watched are run too.
 - **Lazy mode:** saved changes are queued instead of run. The next execution
   runs any queued cells the executed cell depends on (their dependents
   recompute reactively); the rest stay queued. Cells deleted from the file are
