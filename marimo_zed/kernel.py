@@ -95,6 +95,11 @@ class MarimoZedKernel(Kernel):
         self._cells: dict[str, str] = {}
         self._defs: dict[str, set[str]] = {}
         self._refs: dict[str, set[str]] = {}
+        # Cells the runtime's dataflow graph knows about. The runtime only
+        # registers a cell when it appears in a sync's run_ids, so cells
+        # adopted from a watched file (or carried across a runtime restart)
+        # are invisible to it until we explicitly run them.
+        self._runtime_cells: set[str] = set()
         self._notifications: queue.Queue[Any] = queue.Queue()
         self._completed_runs = 0
         self._statuses: dict[str, str] = {}
@@ -145,9 +150,11 @@ class MarimoZedKernel(Kernel):
                 auto_run=False,
             )
         )
-        # After a (re)start the runtime has no state; previously known cells
-        # are re-synced on the next execution.
+        # After a (re)start the runtime has no state or graph; previously
+        # known cells rejoin run_ids via _expand_run_ids as executions need
+        # them (as ancestors or dependents of what runs).
         self._statuses = {}
+        self._runtime_cells = set()
 
     def _stop_bridge(self) -> None:
         self._reader_stop.set()
@@ -233,21 +240,12 @@ class MarimoZedKernel(Kernel):
                 self._pending_stale -= stale
                 run_ids = [*sorted(stale), cell_id]
 
+            run_ids = self._expand_run_ids(run_ids)
             baseline_runs = self._completed_runs
-            assert self.bridge is not None
             self._clear_cell_outputs(
                 self._reactively_affected(set(run_ids)), silent=silent
             )
-            self.bridge.queue_manager.control_queue.put(
-                SyncGraphCommand(
-                    cells={
-                        cast(CellId_t, cid): cell_code
-                        for cid, cell_code in self._cells.items()
-                    },
-                    run_ids=[cast(CellId_t, cid) for cid in run_ids],
-                    delete_ids=[cast(CellId_t, cid) for cid in delete_ids],
-                )
-            )
+            self._send_sync(run_ids, delete_ids)
 
             errored, interrupted = self._pump_until_complete(
                 target_id=cell_id, baseline_runs=baseline_runs, silent=silent
@@ -307,6 +305,7 @@ class MarimoZedKernel(Kernel):
             self._statuses.pop(stale_id, None)
             self._cell_parents.pop(stale_id, None)
             self._pending_stale.discard(stale_id)
+            self._runtime_cells.discard(stale_id)
         return cell_id, delete_ids, previous
 
     def _stale_ancestors(self, target_id: str) -> set[str]:
@@ -340,6 +339,48 @@ class MarimoZedKernel(Kernel):
                     provided |= self._defs.get(cid, set())
                     grew = True
         return affected
+
+    def _expand_run_ids(self, run_ids: list[str]) -> list[str]:
+        """Add cells the runtime graph lacks but this run needs.
+
+        The runtime registers a cell only when it appears in run_ids
+        (sync_graph ignores other entries in ``cells``), so a cell adopted
+        from a watched file or predating a runtime restart neither reruns
+        as a dependent nor provides values as an ancestor until it is run
+        explicitly: include unknown dependents of what runs, then close
+        over the unknown ancestors those cells read from.
+        """
+        seeds = set(run_ids)
+        extra = self._reactively_affected(seeds) - self._runtime_cells - seeds
+        needed: set[str] = set()
+        for cid in seeds | extra:
+            needed |= self._refs.get(cid, set())
+        grew = True
+        while grew:
+            grew = False
+            for cid, defs in self._defs.items():
+                if cid in seeds or cid in extra or cid in self._runtime_cells:
+                    continue
+                if defs & needed:
+                    extra.add(cid)
+                    needed |= self._refs.get(cid, set())
+                    grew = True
+        self._pending_stale -= extra
+        return [*run_ids, *sorted(extra)]
+
+    def _send_sync(self, run_ids: list[str], delete_ids: list[str]) -> None:
+        assert self.bridge is not None
+        self._runtime_cells.update(run_ids)
+        self.bridge.queue_manager.control_queue.put(
+            SyncGraphCommand(
+                cells={
+                    cast(CellId_t, cid): cell_code
+                    for cid, cell_code in self._cells.items()
+                },
+                run_ids=[cast(CellId_t, cid) for cid in run_ids],
+                delete_ids=[cast(CellId_t, cid) for cid in delete_ids],
+            )
+        )
 
     # ------------------------------------------------------------------
     # control commands (`# marimo: ...` cells)
@@ -388,21 +429,13 @@ class MarimoZedKernel(Kernel):
             self._pending_stale.clear()
             if not stale or self.bridge is None or not self.bridge.is_running():
                 return
+            run_ids = self._expand_run_ids(stale)
             self._drain_pending()
             baseline_runs = self._completed_runs
             self._clear_cell_outputs(
-                self._reactively_affected(set(stale)), silent=silent
+                self._reactively_affected(set(run_ids)), silent=silent
             )
-            self.bridge.queue_manager.control_queue.put(
-                SyncGraphCommand(
-                    cells={
-                        cast(CellId_t, cid): cell_code
-                        for cid, cell_code in self._cells.items()
-                    },
-                    run_ids=[cast(CellId_t, cid) for cid in stale],
-                    delete_ids=[],
-                )
-            )
+            self._send_sync(run_ids, [])
             self._pump_until_complete(
                 target_id=None, baseline_runs=baseline_runs, silent=silent
             )
@@ -513,6 +546,7 @@ class MarimoZedKernel(Kernel):
                     self._statuses.pop(cid, None)
                     self._cell_parents.pop(cid, None)
                     self._pending_stale.discard(cid)
+                    self._runtime_cells.discard(cid)
 
             if not run_ids and not delete_ids:
                 return
@@ -529,6 +563,7 @@ class MarimoZedKernel(Kernel):
                 queued = self._reactively_affected(set(run_ids)) & self._pending_stale
                 self._pending_stale -= queued
                 run_ids.extend(sorted(queued))
+            run_ids = self._expand_run_ids(run_ids)
 
             self._drain_pending()
             baseline_runs = self._completed_runs
@@ -536,16 +571,7 @@ class MarimoZedKernel(Kernel):
                 self._reactively_affected(set(run_ids)),
                 silent=self._last_execute_parent is None,
             )
-            self.bridge.queue_manager.control_queue.put(
-                SyncGraphCommand(
-                    cells={
-                        cast(CellId_t, cid): cell_code
-                        for cid, cell_code in self._cells.items()
-                    },
-                    run_ids=[cast(CellId_t, cid) for cid in run_ids],
-                    delete_ids=[cast(CellId_t, cid) for cid in delete_ids],
-                )
-            )
+            self._send_sync(run_ids, delete_ids)
             if run_ids:
                 self._oob_parent = self._last_execute_parent
                 try:
@@ -846,6 +872,7 @@ class MarimoZedKernel(Kernel):
             self._cells = {}
             self._defs = {}
             self._refs = {}
+            self._runtime_cells = set()
             self._statuses = {}
             self._cell_parents = {}
             self._pending_stale = set()

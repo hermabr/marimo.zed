@@ -212,3 +212,30 @@ def test_eager_toggle_runs_queued_cells(client, notebook_dir):
     status, outputs = run(client, "# marimo: eager")
     assert status == "ok"
     assert "4243" in text_of(outputs)
+
+
+def write_notebook2(notebook_dir, p_line: str) -> None:
+    (notebook_dir / "notebook2.py").write_text(
+        f"# %%\n{p_line}\n\n# %%\nq = p + 1\nprint('q =', q)\n\n# %%\nr = 10\n"
+    )
+
+
+def test_adopted_dependents_rerun_on_save(client, notebook_dir):
+    # Only the `p` cell is ever executed; `q = p + 1` exists in the file but
+    # is merely adopted when the file is first watched. Changing `p` on disk
+    # must still rerun `q`, even though the runtime has never seen it.
+    write_notebook2(notebook_dir, "p = 1")
+    status, _ = run(client, "p = 1")
+    assert status == "ok"
+    wait_for_text(client, "watching notebook2.py")
+
+    write_notebook2(notebook_dir, "p = 41")
+    wait_for_text(client, "q = 42")
+
+
+def test_execute_pulls_in_adopted_ancestors(client, notebook_dir):
+    # `r = 10` was adopted from notebook2.py but never executed. A new cell
+    # reading `r` must run that ancestor first instead of raising NameError.
+    status, outputs = run(client, "s = r + 5\nprint('s =', s)")
+    assert status == "ok"
+    assert "s = 15" in text_of(outputs)
