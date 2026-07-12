@@ -87,7 +87,16 @@ This writes `ipykernel_launcher.py` into the project root. Python resolves
 modules from the working directory before site-packages, so the shim shadows
 ipykernel's real launcher and redirects the launch into marimo-zed. In Zed,
 just pick any Python toolchain for the project in the REPL kernel picker —
-the shim hijacks it. Notes:
+the shim hijacks it.
+
+The generated shim also works around a race in Zed's SSH kernel startup. Zed
+can try to open IOPub before `uv` and marimo have finished starting, so the
+shim immediately binds the five ports in Zed's connection file, launches the
+real kernel on alternate loopback ports, and transparently proxies the TCP
+streams once it is ready. The proxy requires no extra dependencies and exits
+with the kernel.
+
+Notes:
 
 - The hijack is the default and applies to **every** `python -m
   ipykernel_launcher` started from the project root (that's the point — the
