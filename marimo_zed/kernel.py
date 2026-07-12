@@ -14,6 +14,7 @@ queues them to run with the next execution. Cells like ``# marimo: lazy``,
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import platform
@@ -221,6 +222,14 @@ class MarimoZedKernel(Kernel):
         with self._graph_lock:
             cell_id, delete_ids, _ = self._register_cell(code, compiled)
             if self._last_execute_parent is not None:
+                # If this cell previously rendered under another request's
+                # output area, blank that area — it would keep showing the
+                # cell's old output next to the new one.
+                stale_parent = self._cell_parents.get(cell_id)
+                if self._parent_msg_id(stale_parent) != self._parent_msg_id(
+                    self._last_execute_parent
+                ):
+                    self._clear_parent_area(stale_parent)
                 self._cell_parents[cell_id] = self._last_execute_parent
             self._queue_discovery(code, compiled)
 
@@ -303,7 +312,7 @@ class MarimoZedKernel(Kernel):
             self._defs.pop(stale_id, None)
             self._refs.pop(stale_id, None)
             self._statuses.pop(stale_id, None)
-            self._cell_parents.pop(stale_id, None)
+            self._clear_parent_area(self._cell_parents.pop(stale_id, None))
             self._pending_stale.discard(stale_id)
             self._runtime_cells.discard(stale_id)
         return cell_id, delete_ids, previous
@@ -524,10 +533,16 @@ class MarimoZedKernel(Kernel):
                 removed: list[str] = []
             else:
                 previous_set, current_set = set(previous_cells), set(cells)
+                adopted: dict[str, str] = {}
                 for code in cells:
                     if code not in previous_set:
-                        broken |= self._adopt_cell(code, run_ids) is None
+                        cid = self._adopt_cell(code, run_ids)
+                        if cid is None:
+                            broken = True
+                        else:
+                            adopted[code] = cid
                 removed = [c for c in previous_cells if c not in current_set]
+                self._transfer_parents(previous_cells, cells, adopted)
 
             delete_ids: list[str] = []
             # A cell that no longer compiles is usually one being edited, not
@@ -544,7 +559,7 @@ class MarimoZedKernel(Kernel):
                     self._defs.pop(cid, None)
                     self._refs.pop(cid, None)
                     self._statuses.pop(cid, None)
-                    self._cell_parents.pop(cid, None)
+                    self._clear_parent_area(self._cell_parents.pop(cid, None))
                     self._pending_stale.discard(cid)
                     self._runtime_cells.discard(cid)
 
@@ -601,6 +616,39 @@ class MarimoZedKernel(Kernel):
         if changed and previous != code:
             run_ids.append(cell_id)
         return cell_id
+
+    def _transfer_parents(
+        self,
+        previous_cells: list[str],
+        cells: list[str],
+        adopted: dict[str, str],
+    ) -> None:
+        """Keep an edited cell's output area across a change of identity.
+
+        An edit can change which graph cell a file cell maps to (definition-
+        free code matches only on identical source, and renamed definitions
+        stop overlapping). Align the old and new cell lists and hand each
+        replaced cell's output area to its successor, so the rerun lands
+        under the same source cell instead of falling back to the area of
+        whatever executed last.
+        """
+        matcher = difflib.SequenceMatcher(a=previous_cells, b=cells, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag != "replace":
+                continue
+            for old_code, new_code in zip(previous_cells[i1:i2], cells[j1:j2]):
+                new_id = adopted.get(new_code)
+                if new_id is None or new_id in self._cell_parents:
+                    continue
+                old_id = next(
+                    (cid for cid, src in self._cells.items() if src == old_code),
+                    None,
+                )
+                if old_id is None or old_id == new_id:
+                    continue
+                parent = self._cell_parents.pop(old_id, None)
+                if parent is not None:
+                    self._cell_parents[new_id] = parent
 
     def _ensure_watch_thread(self) -> None:
         if self._watch_thread is not None and self._watch_thread.is_alive():
@@ -731,7 +779,12 @@ class MarimoZedKernel(Kernel):
             if output.channel == CellChannel.MARIMO_ERROR:
                 errored = True
                 self._emit_error_output(output, silent, parent=parent)
-            else:
+            elif parent is not None:
+                # A cell that has never been executed from the editor has no
+                # output area of its own. Routing its value to another cell's
+                # area shows it under the wrong cell and duplicates it on
+                # every rerun — show only console output and errors from
+                # such cells.
                 data = self._display_data(output)
                 if data:
                     self._send(
@@ -823,6 +876,24 @@ class MarimoZedKernel(Kernel):
             parent = self._cell_parents.get(cell_id)
             if parent is not None:
                 self._send("clear_output", {"wait": False}, silent, parent=parent)
+
+    @staticmethod
+    def _parent_msg_id(parent: dict[str, Any] | None) -> Any:
+        if not parent:
+            return None
+        return parent.get("header", {}).get("msg_id")
+
+    def _clear_parent_area(self, parent: dict[str, Any] | None) -> None:
+        """Blank the output area of a cell that was replaced, moved, or deleted.
+
+        Without this, the area keeps showing the cell's last output — a stale
+        duplicate of the value now rendered elsewhere (or of nothing at all).
+        """
+        if parent is None:
+            return
+        self.session.send(
+            self.iopub_socket, "clear_output", {"wait": False}, parent=parent
+        )
 
     def _emit_oob_stream(self, name: str, text: str) -> None:
         parent = self._last_execute_parent

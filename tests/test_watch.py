@@ -239,3 +239,63 @@ def test_execute_pulls_in_adopted_ancestors(client, notebook_dir):
     status, outputs = run(client, "s = r + 5\nprint('s =', s)")
     assert status == "ok"
     assert "s = 15" in text_of(outputs)
+
+
+def write_notebook3(notebook_dir, expr: str) -> None:
+    (notebook_dir / "notebook3.py").write_text(f"# %%\nm = 7\nm\n\n# %%\n{expr}\n")
+
+
+ROUTING = {}  # msg ids shared across the sequential routing tests below
+
+
+def test_edited_expression_cell_keeps_its_output_area(client, notebook_dir):
+    write_notebook3(notebook_dir, "m * 3")
+    m_msg_id, status, outputs = run_with_id(client, "m = 7\nm")
+    assert status == "ok"
+    if "watching notebook3.py" not in text_of(outputs):
+        wait_for_text(client, "watching notebook3.py")
+    expr_msg_id, status, outputs = run_with_id(client, "m * 3")
+    assert status == "ok"
+    assert "21" in text_of(outputs)
+    ROUTING.update(m=m_msg_id, expr=expr_msg_id)
+
+    # Editing a definition-free cell gives it a new graph identity; its
+    # rerun must still render under the original source cell's area — not
+    # under whatever cell was executed last.
+    write_notebook3(notebook_dir, "m * 4")
+    messages = wait_for_texts(client, {"28"})
+    new_outputs = [msg for msg in messages if "28" in _message_text(msg)]
+    assert new_outputs
+    assert all(
+        msg["parent_header"].get("msg_id") == expr_msg_id for msg in new_outputs
+    )
+
+
+def test_adopted_cell_value_not_shown_under_another_cell(client, notebook_dir):
+    # `m * 111` exists only in the file: it runs, but it has no output area,
+    # so its value must not appear under any other cell's area.
+    (notebook_dir / "notebook3.py").write_text(
+        "# %%\nm = 9\nm\n\n# %%\nm * 4\n\n# %%\nm * 111\n"
+    )
+    messages = wait_for_texts(client, {"36"})
+    text = "\n".join(_message_text(msg) for msg in messages)
+    text += collect_text(client, 2.0)
+    assert "999" not in text
+
+
+def test_deleted_cell_area_is_cleared(client, notebook_dir):
+    # Removing the `m * 4` cell from the file must blank its output area
+    # instead of leaving the stale "36" behind.
+    (notebook_dir / "notebook3.py").write_text("# %%\nm = 9\nm\n")
+    deadline = time.monotonic() + TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            msg = client.get_iopub_msg(timeout=0.5)
+        except Exception:
+            continue
+        if (
+            msg["msg_type"] == "clear_output"
+            and msg["parent_header"].get("msg_id") == ROUTING["expr"]
+        ):
+            return
+    pytest.fail("deleting the cell never cleared its output area")
