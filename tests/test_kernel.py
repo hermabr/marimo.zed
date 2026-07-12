@@ -52,9 +52,8 @@ def run(client: BlockingKernelClient, code: str) -> tuple[str, list[dict]]:
             msg = client.get_iopub_msg(timeout=TIMEOUT if not idle else 0.05)
         except Exception:
             continue
-        if msg["parent_header"].get("msg_id") != msg_id:
-            continue
-        if msg["msg_type"] == "status":
+        is_current = msg["parent_header"].get("msg_id") == msg_id
+        if msg["msg_type"] == "status" and is_current:
             idle = msg["content"]["execution_state"] == "idle"
         elif msg["msg_type"] in ("stream", "display_data", "execute_result", "error"):
             outputs.append(msg)

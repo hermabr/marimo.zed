@@ -17,6 +17,9 @@ Python interpreter.
   cells recompute automatically.
 - stdout/stderr, rich HTML outputs (with a plain-text fallback), and marimo
   errors are translated to standard Jupyter messages.
+- The kernel watches the notebook file on disk: **saving the file re-runs the
+  cells you changed** (and their dependents). An optional lazy mode queues
+  saved changes and runs them with your next execution instead.
 
 ## Architecture
 
@@ -89,6 +92,34 @@ subsequent launches use uv's cache.
 
 Re-run a cell after editing it and watch downstream cells recompute.
 
+## Automatic re-runs on save
+
+Zed gives the kernel no editor events, so where
+[marimo.nvim](https://github.com/hermabr/marimo.nvim) re-runs cells when you
+leave insert mode, marimo.zed re-runs them when the notebook file is saved:
+
+- After you run a cell, the kernel locates the file it came from (it scans the
+  project for a matching `# %%` cell) and starts polling that file. It prints
+  `marimo: watching <file>` when it does. To point it at a file explicitly,
+  run a cell containing `# marimo: watch path/to/file.py`.
+- **Eager mode (default):** saving the file re-runs every cell whose code
+  changed, plus new cells, and marimo reactively recomputes their dependents.
+  Existing cells' outputs are replaced in their own output areas.
+- **Lazy mode:** saved changes are queued instead of run. The next execution
+  runs any queued cells the executed cell depends on (their dependents
+  recompute reactively); the rest stay queued. Cells deleted from the file are
+  removed from the graph in both modes.
+
+Toggle at runtime by running a cell containing `# marimo: lazy` or
+`# marimo: eager` (switching to eager runs everything queued). Set the
+default with `marimo-zed-install --execution lazy`, which writes
+`MARIMO_ZED_EXECUTION` into the kernelspec.
+
+For the closest "re-run when I leave insert mode" feel, enable autosave in
+Zed (e.g. `"autosave": {"after_delay": {"milliseconds": 500}}`) — while a
+cell's code is syntactically invalid mid-edit, the kernel skips it and picks
+it up on the next save that parses.
+
 ## Semantics and limitations (MVP)
 
 - **Cell identity is by definitions.** Code that defines `x` replaces the
@@ -98,8 +129,7 @@ Re-run a cell after editing it and watch downstream cells recompute.
 - **Definition-free code persists.** An expression like `y * 2` or a
   `print(x)` becomes a reactive cell too — it re-runs whenever its inputs
   change. Running identical definition-free code re-uses the existing cell.
-- Outputs of reactively re-run cells appear under whichever execution
-  triggered them.
+- Outputs of reactively re-run cells replace the prior outputs for those cells.
 - `input()` / stdin is not supported yet.
 - The kernel and runtime resolve their environment from the directory Zed
   launches the kernel in (the worktree root). Scratch files outside a uv

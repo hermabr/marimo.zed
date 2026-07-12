@@ -17,6 +17,7 @@ dev = [
   "pytest",
   "jupyter-client",
   "ruff",
+  "polars>=1.42.1",
 ]
 
 [build-system]

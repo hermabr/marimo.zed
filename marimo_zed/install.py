@@ -14,13 +14,29 @@ GITHUB_SOURCE = "git+https://github.com/hermabr/marimo.zed"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Install the marimo Jupyter kernelspec")
-    parser.add_argument("--name", default="marimo", help="kernelspec name (default: marimo)")
-    parser.add_argument(
-        "--display-name", default="marimo (reactive)", help="display name shown in kernel pickers"
+    parser = argparse.ArgumentParser(
+        description="Install the marimo Jupyter kernelspec"
     )
     parser.add_argument(
-        "--uv", default="uv", help="uv executable to put in the kernelspec (default: uv)"
+        "--name", default="marimo", help="kernelspec name (default: marimo)"
+    )
+    parser.add_argument(
+        "--display-name",
+        default="marimo (reactive)",
+        help="display name shown in kernel pickers",
+    )
+    parser.add_argument(
+        "--uv",
+        default="uv",
+        help="uv executable to put in the kernelspec (default: uv)",
+    )
+    parser.add_argument(
+        "--execution",
+        choices=("eager", "lazy"),
+        default="eager",
+        help="default execution mode: eager reruns changed cells when the "
+        "notebook file is saved, lazy queues them until the next execution "
+        "(default: eager; toggle at runtime with a `# marimo: lazy` cell)",
     )
     parser.add_argument(
         "--source",
@@ -63,12 +79,15 @@ def main() -> None:
         "display_name": args.display_name,
         "language": "python",
         "interrupt_mode": "signal",
+        "env": {"MARIMO_ZED_EXECUTION": args.execution},
         "metadata": {"debugger": False},
     }
 
     with tempfile.TemporaryDirectory() as td:
         (Path(td) / "kernel.json").write_text(json.dumps(spec, indent=2))
-        dest = KernelSpecManager().install_kernel_spec(td, kernel_name=args.name, user=True)
+        dest = KernelSpecManager().install_kernel_spec(
+            td, kernel_name=args.name, user=True
+        )
     print(f"Installed kernelspec '{args.name}' to {dest}")
 
 
