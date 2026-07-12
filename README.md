@@ -57,8 +57,7 @@ This writes a `marimo` kernelspec to `~/Library/Jupyter/kernels/marimo` that
 references this checkout via `uv run --with-editable`, so there is nothing to
 build or publish.
 
-Without a checkout — e.g. on a remote machine you ssh into with Zed, where
-kernels run remotely and need their own kernelspec:
+Without a checkout:
 
 ```sh
 uvx --from git+https://github.com/hermabr/marimo.zed marimo-zed-install
@@ -70,6 +69,39 @@ the kernelspec installs: a git/PyPI requirement, or a local directory
 (installed editable). `uv` must be on the PATH Zed sees. The first launch in a new
 project resolves the overlay environment and can take a few seconds;
 subsequent launches use uv's cache.
+
+### Remote (SSH) projects
+
+Zed never reads Jupyter kernelspecs in SSH remote projects: whichever Python
+toolchain you pick in the kernel picker, its headless server runs
+`<python> -m ipykernel_launcher -f <connection_file>` from the project root.
+So instead of a kernelspec, install a **shim** into the project on the remote
+machine:
+
+```sh
+cd /path/to/project   # on the remote machine
+uvx --from git+https://github.com/hermabr/marimo.zed marimo-zed-install --ssh-shim
+```
+
+This writes `ipykernel_launcher.py` into the project root. Python resolves
+modules from the working directory before site-packages, so the shim shadows
+ipykernel's real launcher and redirects the launch into marimo-zed. In Zed,
+just pick any Python toolchain for the project in the REPL kernel picker —
+the shim hijacks it. Notes:
+
+- The hijack is the default and applies to **every** `python -m
+  ipykernel_launcher` started from the project root (that's the point — the
+  toolchain choice in Zed's picker doesn't otherwise matter). Set
+  `MARIMO_ZED_DISABLE=1` in the environment to fall through to the real
+  ipykernel.
+- The shim bakes in the absolute path of `uv` found at install time
+  (override with `--uv`), since Zed's remote server may run with a minimal
+  PATH.
+- `--execution` and `--source` work the same as for the kernelspec.
+- Add `ipykernel_launcher.py` to the project's `.gitignore` (or commit it, if
+  everyone on the project wants the marimo REPL).
+- `PYTHONSAFEPATH=1` (or python's `-P`) disables working-directory imports
+  and therefore the shim.
 
 ## Use in Zed
 
@@ -89,6 +121,10 @@ subsequent launches use uv's cache.
 3. Open a Python file and run code with the REPL: `ctrl-shift-enter`
    (`repl: run`) runs the current cell — use `# %%` markers to split a file
    into cells — or the current selection.
+
+In SSH remote projects, steps 1–2 don't apply (Zed ignores kernelspecs and
+`kernel_selections` there): install the shim as described above and pick any
+Python toolchain in the kernel picker instead.
 
 Re-run a cell after editing it and watch downstream cells recompute.
 
